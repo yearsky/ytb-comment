@@ -1,7 +1,7 @@
 import 'server-only';
 
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
 import {
   pgTable,
   text,
@@ -14,7 +14,12 @@ import {
 import { count, eq, ilike } from 'drizzle-orm';
 import { createInsertSchema } from 'drizzle-zod';
 
-export const db = drizzle(neon(process.env.POSTGRES_URL!));
+// Buat koneksi ke database Supabase
+const connectionString = process.env.POSTGRES_URL!;
+// Untuk penggunaan query di server side
+const queryClient = postgres(connectionString);
+// Inisialisasi Drizzle dengan connection client
+export const db = drizzle(queryClient);
 
 export const statusEnum = pgEnum('status', ['active', 'inactive', 'archived']);
 
