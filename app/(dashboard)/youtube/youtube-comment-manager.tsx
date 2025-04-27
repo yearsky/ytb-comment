@@ -38,16 +38,17 @@ export function YoutubeCommentManager() {
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('judol');
-  const [activeTab, setActiveTab] = useState('videos'); // Tambah state untuk tab aktif
+  const [activeTab, setActiveTab] = useState('videos');
 
-  // Ambil Channel ID otomatis saat komponen dimuat
+  // Ambil Channel ID dan fetch video otomatis saat komponen dimuat
   useEffect(() => {
-    const fetchChannelId = async () => {
+    const fetchChannelIdAndVideos = async () => {
       setLoading(true);
       try {
-        const response = await fetch('/api/youtube/channel');
-        if (!response.ok) {
-          const errorData = await response.json();
+        // Ambil Channel ID
+        const channelResponse = await fetch('/api/youtube/channel');
+        if (!channelResponse.ok) {
+          const errorData = await channelResponse.json();
           alert(
             errorData.error === 'No YouTube channel found for this account'
               ? 'No YouTube channel is associated with your Google account. Please create a channel first.'
@@ -56,18 +57,55 @@ export function YoutubeCommentManager() {
           setLoading(false);
           return;
         }
-        const data = await response.json();
-        setChannelId(data.channelId);
+        const channelData = await channelResponse.json();
+        const newChannelId = channelData.channelId;
+        setChannelId(newChannelId);
+
+        // Fetch video otomatis setelah dapat channelId
+        const videosResponse = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(newChannelId)}`);
+        if (!videosResponse.ok) {
+          const errorData = await videosResponse.json();
+          alert(`Error: ${errorData.error || 'Failed to fetch videos'}`);
+          setLoading(false);
+          return;
+        }
+
+        const videosData = await videosResponse.json();
+
+        // Calculate spam probability for each video
+        const videosWithAnalytics = await Promise.all(videosData.videos.map(async (video: any) => {
+          const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
+          const commentsData = await commentsResponse.json();
+          
+          const spamComments = commentsData.comments.filter((comment: Comment) => 
+            comment.text.toLowerCase().includes(keyword.toLowerCase())
+          );
+          
+          const spamProbability = commentsData.comments.length > 0 
+            ? (spamComments.length / commentsData.comments.length) * 100 
+            : 0;
+          
+          console.log(`Video ${video.id}:`, { spamComments, commentCount: commentsData.comments.length });
+          
+          return {
+            ...video,
+            commentCount: commentsData.comments.length,
+            spamProbability,
+            spamComments
+          };
+        }));
+
+        setVideos(videosWithAnalytics);
       } catch (error) {
-        console.error('Error fetching channel ID:', error);
-        alert('Failed to fetch channel ID. Please try again.');
+        console.error('Error fetching channel ID or videos:', error);
+        alert('Failed to fetch channel ID or videos. Please try again.');
       } finally {
         setLoading(false);
       }
     };
     
-    fetchChannelId();
-  }, []);
+    fetchChannelIdAndVideos();
+  }, [keyword]); // Tambah keyword sebagai dependency untuk refresh saat keyword berubah
 
   const fetchChannelVideos = async () => {
     if (!channelId) {
@@ -141,7 +179,9 @@ export function YoutubeCommentManager() {
       setVideos(videos.map(video => ({
         ...video,
         spamComments: video.spamComments?.filter(comment => comment.id !== commentId) || [],
-        spamProbability: video.spamComments?.length > 0 
+        spamProbability: video.spamComments?.
+
+length > 0 
           ? ((video.spamComments.length - 1) / video.commentCount) * 100 
           : 0
       })));
@@ -162,7 +202,7 @@ export function YoutubeCommentManager() {
   const handleCommentSelect = (newComments: Comment[]) => {
     console.log('Updating comments:', newComments);
     setComments(newComments);
-    setActiveTab('spam'); // Pindah ke tab Potential Spam
+    setActiveTab('spam');
   };
 
   return (
@@ -173,7 +213,7 @@ export function YoutubeCommentManager() {
           {channelId ? `Channel ID: ${channelId}` : 'Fetching channel ID...'}
         </p>
         <Button onClick={fetchChannelVideos} disabled={loading || !channelId}>
-          {loading ? 'Loading...' : 'Fetch Videos'}
+          {loading ? 'Loading...' : 'Refresh Videos'}
         </Button>
       </div>
 
