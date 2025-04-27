@@ -17,15 +17,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing videoId parameter' }, { status: 400 });
     }
     
-    // In a real implementation, you would use the access token from the session to call the YouTube API
-    const accessToken = (session as any).accessToken;
+    // Now we can access the access token directly from the session
+    const accessToken = session.accessToken;
     console.log('Access Token:', accessToken);
+    
     if (!accessToken) {
       return NextResponse.json({ error: 'Missing access token' }, { status: 401 });
     }
     
-    // Example of fetching comments from YouTube API (simplified)
-    // In a real implementation, you would use the Google API client library
+    // Example of fetching comments from YouTube API
     const response = await fetch(
       `https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${videoId}&maxResults=100`,
       {
@@ -37,6 +37,7 @@ export async function GET(request: NextRequest) {
     
     if (!response.ok) {
       const errorData = await response.json();
+      console.error('YouTube API error:', errorData);
       return NextResponse.json({ error: errorData }, { status: response.status });
     }
     
@@ -81,8 +82,8 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Missing commentId' }, { status: 400 });
     }
     
-    // In a real implementation, you would use the access token from the session
-    const accessToken = (session as any).accessToken;
+    // Now we can access the access token directly from the session
+    const accessToken = session.accessToken;
     
     if (!accessToken) {
       return NextResponse.json({ error: 'Missing access token' }, { status: 401 });
