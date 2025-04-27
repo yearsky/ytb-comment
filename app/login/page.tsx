@@ -23,7 +23,7 @@ export default function LoginPage() {
             action={async () => {
               'use server';
               await signIn('google', {
-                redirectTo: '/'
+                redirectTo: '/youtube'
               });
             }}
             className="w-full"

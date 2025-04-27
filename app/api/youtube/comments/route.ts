@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     
     // In a real implementation, you would use the access token from the session to call the YouTube API
     const accessToken = (session as any).accessToken;
-    
+    console.log('Access Token:', accessToken);
     if (!accessToken) {
       return NextResponse.json({ error: 'Missing access token' }, { status: 401 });
     }

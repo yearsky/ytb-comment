@@ -45,8 +45,6 @@ export function YoutubeCommentManager() {
   const [keyword, setKeyword] = useState('judol');
 
   const fetchComments = async () => {
-    // Extract video ID from URL
-    // This is a simplified example - you'd need proper regex for YouTube URLs
     const videoId = videoUrl.split('v=')[1]?.split('&')[0];
     
     if (!videoId) {
@@ -56,23 +54,52 @@ export function YoutubeCommentManager() {
     
     setLoading(true);
     
-    // In a real implementation, you would fetch comments from the YouTube API
-    // using the session token for authentication
-    
-    // Simulate API call with timeout
-    setTimeout(() => {
+    try {
+      // Call your API route
+      const response = await fetch(`/api/youtube/comments?videoId=${videoId}`);
+      console.log('Response:', response);
+      if (!response.ok) {
+        const errorData = await response.json();
+        alert(`Error: ${errorData.error || 'Failed to fetch comments'}`);
+        setLoading(false);
+        return;
+      }
+      
+      const data = await response.json();
+      setComments(data.comments);
+    } catch (error) {
+      console.error('Error fetching comments:', error);
+      alert('Failed to fetch comments. Please try again.');
+    } finally {
       setLoading(false);
-      // Using mock data for now
-      setComments(MOCK_COMMENTS);
-    }, 1000);
+    }
   };
 
   const deleteComment = async (commentId: string) => {
-    // In a real implementation, you would call the YouTube API to delete the comment
-    setComments(comments.filter(comment => comment.id !== commentId));
-    
-    // Show success message or handle errors
-    alert(`Comment ${commentId} deleted successfully!`);
+    try {
+      const response = await fetch('/api/youtube/comments', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ commentId }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        alert(`Error: ${errorData.error || 'Failed to delete comment'}`);
+        return;
+      }
+      
+      // Remove the comment from state
+      setComments(comments.filter(comment => comment.id !== commentId));
+      
+      // Show success message
+      alert(`Comment deleted successfully!`);
+    } catch (error) {
+      console.error('Error deleting comment:', error);
+      alert('Failed to delete comment. Please try again.');
+    }
   };
 
   const filterSpamComments = () => {
