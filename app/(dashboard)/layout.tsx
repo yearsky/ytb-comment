@@ -1,3 +1,4 @@
+// Import YouTube icon
 import Link from 'next/link';
 import {
   Home,
@@ -7,7 +8,8 @@ import {
   PanelLeft,
   Settings,
   ShoppingCart,
-  Users2
+  Users2,
+  Youtube
 } from 'lucide-react';
 
 import {
@@ -86,6 +88,10 @@ function DesktopNav() {
           <Users2 className="h-5 w-5" />
         </NavItem>
 
+        <NavItem href="/youtube" label="YouTube">
+          <Youtube className="h-5 w-5" />
+        </NavItem>
+
         <NavItem href="#" label="Analytics">
           <LineChart className="h-5 w-5" />
         </NavItem>
@@ -155,10 +161,24 @@ function MobileNav() {
             Customers
           </Link>
           <Link
+            href="/youtube"
+            className="flex items-center gap-4 px-2.5 text-muted-foreground hover:text-foreground"
+          >
+            <Youtube className="h-5 w-5" />
+            YouTube
+          </Link>
+          <Link
             href="#"
             className="flex items-center gap-4 px-2.5 text-muted-foreground hover:text-foreground"
           >
             <LineChart className="h-5 w-5" />
+            Analytics
+          </Link>
+          <Link
+            href="#"
+            className="flex items-center gap-4 px-2.5 text-muted-foreground hover:text-foreground"
+          >
+            <Settings className="h-5 w-5" />
             Settings
           </Link>
         </nav>
