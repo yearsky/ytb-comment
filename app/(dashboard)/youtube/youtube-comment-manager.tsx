@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -12,64 +12,109 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
+import { Progress } from '@/components/ui/progress';
 
-// Mock data - this would be replaced with actual API calls
-const MOCK_COMMENTS = [
-  {
-    id: '1',
-    author: 'User1',
-    text: 'This seems like spam comment',
-    videoId: 'abc123',
-    publishedAt: '2023-01-01T12:00:00Z'
-  },
-  {
-    id: '2',
-    author: 'Suspicious User',
-    text: 'Click here to win free stuff judol',
-    videoId: 'abc123',
-    publishedAt: '2023-01-02T14:30:00Z'
-  },
-  {
-    id: '3',
-    author: 'Another User',
-    text: 'Great video content!',
-    videoId: 'abc123',
-    publishedAt: '2023-01-03T09:15:00Z'
-  }
-];
+interface Comment {
+  id: string;
+  author: string;
+  text: string;
+  videoId: string;
+  publishedAt: string;
+}
+
+interface Video {
+  id: string;
+  title: string;
+  publishedAt: string;
+  commentCount: number;
+  spamProbability: number;
+  spamComments: Comment[];
+}
 
 export function YoutubeCommentManager() {
   const [videoUrl, setVideoUrl] = useState('');
-  const [comments, setComments] = useState(MOCK_COMMENTS);
+  const [channelId, setChannelId] = useState('');
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('judol');
+  const [activeTab, setActiveTab] = useState('videos'); // Tambah state untuk tab aktif
 
-  const fetchComments = async () => {
-    const videoId = videoUrl.split('v=')[1]?.split('&')[0];
+  // Ambil Channel ID otomatis saat komponen dimuat
+  useEffect(() => {
+    const fetchChannelId = async () => {
+      setLoading(true);
+      try {
+        const response = await fetch('/api/youtube/channel');
+        if (!response.ok) {
+          const errorData = await response.json();
+          alert(
+            errorData.error === 'No YouTube channel found for this account'
+              ? 'No YouTube channel is associated with your Google account. Please create a channel first.'
+              : `Error: ${errorData.error || 'Failed to fetch channel ID'}`
+          );
+          setLoading(false);
+          return;
+        }
+        const data = await response.json();
+        setChannelId(data.channelId);
+      } catch (error) {
+        console.error('Error fetching channel ID:', error);
+        alert('Failed to fetch channel ID. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    };
     
-    if (!videoId) {
-      alert('Invalid YouTube URL');
+    fetchChannelId();
+  }, []);
+
+  const fetchChannelVideos = async () => {
+    if (!channelId) {
+      alert('No channel ID available');
       return;
     }
     
     setLoading(true);
     
     try {
-      // Call your API route
-      const response = await fetch(`/api/youtube/comments?videoId=${videoId}`);
-      console.log('Response:', response);
+      const response = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(channelId)}`);
       if (!response.ok) {
         const errorData = await response.json();
-        alert(`Error: ${errorData.error || 'Failed to fetch comments'}`);
+        alert(`Error: ${errorData.error || 'Failed to fetch videos'}`);
         setLoading(false);
         return;
       }
       
       const data = await response.json();
-      setComments(data.comments);
+      
+      // Calculate spam probability for each video
+      const videosWithAnalytics = await Promise.all(data.videos.map(async (video: any) => {
+        const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
+        const commentsData = await commentsResponse.json();
+        
+        const spamComments = commentsData.comments.filter((comment: Comment) => 
+          comment.text.toLowerCase().includes(keyword.toLowerCase())
+        );
+        
+        const spamProbability = commentsData.comments.length > 0 
+          ? (spamComments.length / commentsData.comments.length) * 100 
+          : 0;
+        
+        console.log(`Video ${video.id}:`, { spamComments, commentCount: commentsData.comments.length });
+        
+        return {
+          ...video,
+          commentCount: commentsData.comments.length,
+          spamProbability,
+          spamComments
+        };
+      }));
+      
+      setVideos(videosWithAnalytics);
     } catch (error) {
-      console.error('Error fetching comments:', error);
-      alert('Failed to fetch comments. Please try again.');
+      console.error('Error fetching videos:', error);
+      alert('Failed to fetch videos. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -91,10 +136,16 @@ export function YoutubeCommentManager() {
         return;
       }
       
-      // Remove the comment from state
       setComments(comments.filter(comment => comment.id !== commentId));
+      // Update video spam probability
+      setVideos(videos.map(video => ({
+        ...video,
+        spamComments: video.spamComments?.filter(comment => comment.id !== commentId) || [],
+        spamProbability: video.spamComments?.length > 0 
+          ? ((video.spamComments.length - 1) / video.commentCount) * 100 
+          : 0
+      })));
       
-      // Show success message
       alert(`Comment deleted successfully!`);
     } catch (error) {
       console.error('Error deleting comment:', error);
@@ -102,28 +153,28 @@ export function YoutubeCommentManager() {
     }
   };
 
-  const filterSpamComments = () => {
-    // This would be more sophisticated in a real implementation
+  const filterSpamComments = (comments: Comment[]) => {
     return comments.filter(comment => 
       comment.text.toLowerCase().includes(keyword.toLowerCase())
     );
   };
 
+  const handleCommentSelect = (newComments: Comment[]) => {
+    console.log('Updating comments:', newComments);
+    setComments(newComments);
+    setActiveTab('spam'); // Pindah ke tab Potential Spam
+  };
+
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <h3 className="text-md font-medium">Enter YouTube Video URL</h3>
-        <div className="flex gap-2">
-          <Input
-            value={videoUrl}
-            onChange={(e) => setVideoUrl(e.target.value)}
-            placeholder="https://www.youtube.com/watch?v=..."
-            className="flex-1"
-          />
-          <Button onClick={fetchComments} disabled={loading}>
-            {loading ? 'Loading...' : 'Fetch Comments'}
-          </Button>
-        </div>
+        <h3 className="text-md font-medium">Your YouTube Channel</h3>
+        <p className="text-sm text-muted-foreground">
+          {channelId ? `Channel ID: ${channelId}` : 'Fetching channel ID...'}
+        </p>
+        <Button onClick={fetchChannelVideos} disabled={loading || !channelId}>
+          {loading ? 'Loading...' : 'Fetch Videos'}
+        </Button>
       </div>
 
       <div className="space-y-2">
@@ -135,24 +186,89 @@ export function YoutubeCommentManager() {
         />
       </div>
 
-      <Tabs defaultValue="spam">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
+          <TabsTrigger value="videos">Video Analytics</TabsTrigger>
           <TabsTrigger value="spam">Potential Spam</TabsTrigger>
-          <TabsTrigger value="all">All Comments</TabsTrigger>
+          {/* <TabsTrigger value="all">All Comments</TabsTrigger> */}
         </TabsList>
+        <TabsContent value="videos">
+          <VideoTable videos={videos} onCommentSelect={handleCommentSelect} />
+        </TabsContent>
         <TabsContent value="spam">
           <CommentTable
-            comments={filterSpamComments()}
+            comments={filterSpamComments(comments)}
             onDelete={deleteComment}
           />
         </TabsContent>
-        <TabsContent value="all">
+        {/* <TabsContent value="all">
           <CommentTable
             comments={comments}
             onDelete={deleteComment}
           />
-        </TabsContent>
+        </TabsContent> */}
       </Tabs>
+    </div>
+  );
+}
+
+function VideoTable({ 
+  videos,
+  onCommentSelect
+}: { 
+  videos: Video[];
+  onCommentSelect: (comments: Comment[]) => void;
+}) {
+  return (
+    <div className="border rounded-md">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Title</TableHead>
+            <TableHead>Published</TableHead>
+            <TableHead>Comments</TableHead>
+            <TableHead>Spam Probability</TableHead>
+            <TableHead>Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {videos.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={5} className="text-center py-4">
+                No videos found
+              </TableCell>
+            </TableRow>
+          ) : (
+            videos.map((video) => (
+              <TableRow key={video.id}>
+                <TableCell className="font-medium">{video.title}</TableCell>
+                <TableCell>
+                  {new Date(video.publishedAt).toLocaleDateString()}
+                </TableCell>
+                <TableCell>{video.commentCount}</TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <Progress value={video.spamProbability} className="w-[100px]" />
+                    <span>{video.spamProbability.toFixed(1)}%</span>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      console.log('View Spam clicked, comments:', video.spamComments);
+                      onCommentSelect(video.spamComments || []);
+                    }}
+                  >
+                    View Spam
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -161,7 +277,7 @@ function CommentTable({
   comments, 
   onDelete 
 }: { 
-  comments: any[];
+  comments: Comment[];
   onDelete: (id: string) => void;
 }) {
   return (
