@@ -13,6 +13,12 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { Progress } from '@/components/ui/progress';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Badge } from '@/components/ui/badge';
+
+// Import Gradio client properly
+// Make sure you've installed @gradio/client package: npm install @gradio/client
+import { Client } from '@gradio/client';
 
 interface Comment {
   id: string;
@@ -20,6 +26,8 @@ interface Comment {
   text: string;
   videoId: string;
   publishedAt: string;
+  isSpam?: boolean;
+  spamScore?: number;
 }
 
 interface Video {
@@ -29,6 +37,8 @@ interface Video {
   commentCount: number;
   spamProbability: number;
   spamComments: Comment[];
+  isAnalyzed?: boolean;
+  isAnalyzing?: boolean;
 }
 
 export function YoutubeCommentManager() {
@@ -40,6 +50,10 @@ export function YoutubeCommentManager() {
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('judol');
   const [activeTab, setActiveTab] = useState('videos');
+  const [useAI, setUseAI] = useState(true);
+  const [analyzing, setAnalyzing] = useState(false);
+  // Add error state for better error handling
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setIsMounted(true);
@@ -50,6 +64,7 @@ export function YoutubeCommentManager() {
 
     const fetchChannelIdAndVideos = async () => {
       setLoading(true);
+      setError(null);
       try {
         const channelResponse = await fetch('/api/youtube/channel');
         if (!channelResponse.ok) {
@@ -66,7 +81,9 @@ export function YoutubeCommentManager() {
         const newChannelId = channelData.channelId;
         setChannelId(newChannelId);
 
-        const videosResponse = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(newChannelId)}`);
+        const videosResponse = await fetch(
+          `/api/youtube/videos?channelId=${encodeURIComponent(newChannelId)}`
+        );
         if (!videosResponse.ok) {
           const errorData = await videosResponse.json();
           alert(`Error: ${errorData.error || 'Failed to fetch videos'}`);
@@ -75,30 +92,18 @@ export function YoutubeCommentManager() {
         }
 
         const videosData = await videosResponse.json();
-
-        const videosWithAnalytics = await Promise.all(videosData.videos.map(async (video: any) => {
-          const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
-          const commentsData = await commentsResponse.json();
-
-          const spamComments = commentsData.comments.filter((comment: Comment) =>
-            comment.text.toLowerCase().includes(keyword.toLowerCase())
-          );
-
-          const spamProbability = commentsData.comments.length > 0
-            ? (spamComments.length / commentsData.comments.length) * 100
-            : 0;
-
-          return {
-            ...video,
-            commentCount: commentsData.comments.length,
-            spamProbability,
-            spamComments
-          };
+        const initialVideos = videosData.videos.map((video: any) => ({
+          ...video,
+          commentCount: 0,
+          spamProbability: 0,
+          spamComments: [],
+          isAnalyzed: false
         }));
 
-        setVideos(videosWithAnalytics);
+        setVideos(initialVideos);
       } catch (error) {
         console.error('Error fetching channel ID or videos:', error);
+        setError('Failed to fetch channel ID or videos. Please try again.');
         alert('Failed to fetch channel ID or videos. Please try again.');
       } finally {
         setLoading(false);
@@ -106,7 +111,7 @@ export function YoutubeCommentManager() {
     };
 
     fetchChannelIdAndVideos();
-  }, [isMounted, keyword]);
+  }, [isMounted]);
 
   const fetchChannelVideos = async () => {
     if (!channelId) {
@@ -115,9 +120,12 @@ export function YoutubeCommentManager() {
     }
 
     setLoading(true);
+    setError(null);
 
     try {
-      const response = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(channelId)}`);
+      const response = await fetch(
+        `/api/youtube/videos?channelId=${encodeURIComponent(channelId)}`
+      );
       if (!response.ok) {
         const errorData = await response.json();
         alert(`Error: ${errorData.error || 'Failed to fetch videos'}`);
@@ -126,33 +134,161 @@ export function YoutubeCommentManager() {
       }
 
       const data = await response.json();
-
-      const videosWithAnalytics = await Promise.all(data.videos.map(async (video: any) => {
-        const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
-        const commentsData = await commentsResponse.json();
-
-        const spamComments = commentsData.comments.filter((comment: Comment) =>
-          comment.text.toLowerCase().includes(keyword.toLowerCase())
-        );
-
-        const spamProbability = commentsData.comments.length > 0
-          ? (spamComments.length / commentsData.comments.length) * 100
-          : 0;
-
-        return {
-          ...video,
-          commentCount: commentsData.comments.length,
-          spamProbability,
-          spamComments
-        };
+      const initialVideos = data.videos.map((video: any) => ({
+        ...video,
+        commentCount: 0,
+        spamProbability: 0,
+        spamComments: [],
+        isAnalyzed: false
       }));
 
-      setVideos(videosWithAnalytics);
+      setVideos(initialVideos);
     } catch (error) {
       console.error('Error fetching videos:', error);
+      setError('Failed to fetch videos. Please try again.');
       alert('Failed to fetch videos. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const analyzeVideoComments = async (videoId: string) => {
+    // Mark this video as currently analyzing
+    setVideos((prevVideos) =>
+      prevVideos.map((v) =>
+        v.id === videoId ? { ...v, isAnalyzing: true } : v
+      )
+    );
+    setError(null);
+
+    try {
+      // Fetch comments for this video
+      const commentsResponse = await fetch(
+        `/api/youtube/comments?videoId=${videoId}`
+      );
+      if (!commentsResponse.ok) {
+        throw new Error('Failed to fetch comments');
+      }
+
+      const commentsData = await commentsResponse.json();
+      const videoComments = commentsData.comments;
+
+      let spamComments: Comment[] = [];
+
+      if (useAI && videoComments.length > 0) {
+        try {
+          console.log('Sending comments for AI processing...');
+
+          // Process comments one by one
+          const predictions = await Promise.all(
+            videoComments.map(async (comment: Comment) => {
+              const response = await fetch('/api/youtube/comments/analyze-single-comment', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ comment: comment.text })
+              });
+
+              if (!response.ok) {
+                throw new Error('Failed to process comment');
+              }
+
+              const data = await response.json();
+              return data.prediction;
+            })
+          );
+
+          console.log('Received AI predictions:', predictions);
+
+          // Map predictions to comments
+          spamComments = videoComments.filter(
+            (comment: Comment, index: number) => {
+              const score = predictions[index] || 0;
+              comment.spamScore = score;
+              comment.isSpam = score > 0.7; // Threshold for spam detection
+              return (
+                comment.isSpam ||
+                comment.text.toLowerCase().includes(keyword.toLowerCase())
+              );
+            }
+          );
+        } catch (aiError) {
+          console.error('AI processing error:', aiError);
+          setError(
+            `AI processing error: ${aiError instanceof Error ? aiError.message : 'Unknown error'}`
+          );
+          // Fallback to keyword filtering if AI fails
+          console.log('Falling back to keyword filtering');
+          spamComments = videoComments.filter((comment: Comment) =>
+            comment.text.toLowerCase().includes(keyword.toLowerCase())
+          );
+        }
+      } else {
+        // Use only keyword filtering
+        spamComments = videoComments.filter((comment: Comment) =>
+          comment.text.toLowerCase().includes(keyword.toLowerCase())
+        );
+      }
+
+      // Calculate spam probability
+      const spamProbability =
+        videoComments.length > 0
+          ? (spamComments.length / videoComments.length) * 100
+          : 0;
+
+      // Update video with analysis results
+      setVideos((prevVideos) =>
+        prevVideos.map((v) =>
+          v.id === videoId
+            ? {
+                ...v,
+                commentCount: videoComments.length,
+                spamComments,
+                spamProbability,
+                isAnalyzed: true,
+                isAnalyzing: false
+              }
+            : v
+        )
+      );
+
+      return spamComments;
+    } catch (error) {
+      console.error(`Error analyzing video ${videoId}:`, error);
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      setError(`Error analyzing video: ${errorMessage}`);
+
+      // Update video to show analysis failed
+      setVideos((prevVideos) =>
+        prevVideos.map((v) =>
+          v.id === videoId ? { ...v, isAnalyzing: false } : v
+        )
+      );
+
+      return [];
+    }
+  };
+
+  const analyzeAllVideos = async () => {
+    setAnalyzing(true);
+    setError(null);
+
+    try {
+      for (const video of videos) {
+        if (!video.isAnalyzed) {
+          await analyzeVideoComments(video.id);
+        }
+      }
+    } catch (error) {
+      console.error('Error analyzing videos:', error);
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      setError(`Error analyzing videos: ${errorMessage}`);
+      alert('Some videos could not be analyzed. Please try again.');
+    } finally {
+      setAnalyzing(false);
     }
   };
 
@@ -161,9 +297,9 @@ export function YoutubeCommentManager() {
       const response = await fetch('/api/youtube/comments', {
         method: 'DELETE',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ commentId }),
+        body: JSON.stringify({ commentId })
       });
 
       if (!response.ok) {
@@ -172,29 +308,31 @@ export function YoutubeCommentManager() {
         return;
       }
 
-      setComments(comments.filter(comment => comment.id !== commentId));
-      setVideos(videos.map(video => {
-        const updatedSpamComments = video.spamComments?.filter(comment => comment.id !== commentId) || [];
-        return {
-          ...video,
-          spamComments: updatedSpamComments,
-          spamProbability: video.commentCount > 0
-            ? (updatedSpamComments.length / video.commentCount) * 100
-            : 0
-        };
-      }));
+      setComments(comments.filter((comment) => comment.id !== commentId));
+      setVideos(
+        videos.map((video) => {
+          const updatedSpamComments =
+            video.spamComments?.filter((comment) => comment.id !== commentId) ||
+            [];
+          return {
+            ...video,
+            spamComments: updatedSpamComments,
+            spamProbability:
+              video.commentCount > 0
+                ? (updatedSpamComments.length / video.commentCount) * 100
+                : 0
+          };
+        })
+      );
 
       alert(`Comment deleted successfully!`);
     } catch (error) {
       console.error('Error deleting comment:', error);
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      setError(`Error deleting comment: ${errorMessage}`);
       alert('Failed to delete comment. Please try again.');
     }
-  };
-
-  const filterSpamComments = (comments: Comment[]) => {
-    return comments.filter(comment =>
-      comment.text.toLowerCase().includes(keyword.toLowerCase())
-    );
   };
 
   const handleCommentSelect = (newComments: Comment[]) => {
@@ -214,10 +352,33 @@ export function YoutubeCommentManager() {
         <p className="text-sm text-muted-foreground">
           {channelId ? `Channel ID: ${channelId}` : 'Fetching channel ID...'}
         </p>
-        <Button onClick={fetchChannelVideos} disabled={loading || !channelId}>
-          {loading ? 'Loading...' : 'Refresh Videos'}
-        </Button>
+        <div className="flex items-center gap-4">
+          <Button onClick={fetchChannelVideos} disabled={loading || !channelId}>
+            {loading ? 'Loading...' : 'Refresh Videos'}
+          </Button>
+
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              id="useAI"
+              checked={useAI}
+              onCheckedChange={(checked) => setUseAI(checked === true)}
+            />
+            <label
+              htmlFor="useAI"
+              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+            >
+              Use AI detection
+            </label>
+          </div>
+        </div>
       </div>
+
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+          <strong className="font-bold">Error: </strong>
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
 
       <div className="space-y-2">
         <h3 className="text-md font-medium">Filter Spam Keywords</h3>
@@ -234,13 +395,23 @@ export function YoutubeCommentManager() {
           <TabsTrigger value="spam">Potential Spam</TabsTrigger>
         </TabsList>
         <TabsContent value="videos">
-          <VideoTable videos={videos} onCommentSelect={handleCommentSelect} />
+          <div className="mb-4">
+            <Button
+              onClick={analyzeAllVideos}
+              disabled={analyzing || videos.length === 0}
+              className="mb-4"
+            >
+              {analyzing ? 'Analyzing All Videos...' : 'Analyze All Videos'}
+            </Button>
+          </div>
+          <VideoTable
+            videos={videos}
+            onCommentSelect={handleCommentSelect}
+            onAnalyze={analyzeVideoComments}
+          />
         </TabsContent>
         <TabsContent value="spam">
-          <CommentTable
-            comments={filterSpamComments(comments)}
-            onDelete={deleteComment}
-          />
+          <CommentTable comments={comments} onDelete={deleteComment} />
         </TabsContent>
       </Tabs>
     </div>
@@ -249,10 +420,12 @@ export function YoutubeCommentManager() {
 
 function VideoTable({
   videos,
-  onCommentSelect
+  onCommentSelect,
+  onAnalyze
 }: {
   videos: Video[];
   onCommentSelect: (comments: Comment[]) => void;
+  onAnalyze: (videoId: string) => Promise<Comment[]>;
 }) {
   // Client-side date formatting function
   const formatDate = (dateString: string) => {
@@ -269,13 +442,14 @@ function VideoTable({
             <TableHead>Published</TableHead>
             <TableHead>Comments</TableHead>
             <TableHead>Spam Probability</TableHead>
+            <TableHead>Status</TableHead>
             <TableHead>Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {videos.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center py-4">
+              <TableCell colSpan={6} className="text-center py-4">
                 No videos found
               </TableCell>
             </TableRow>
@@ -283,24 +457,66 @@ function VideoTable({
             videos.map((video) => (
               <TableRow key={video.id}>
                 <TableCell className="font-medium">{video.title}</TableCell>
+                <TableCell>{formatDate(video.publishedAt)}</TableCell>
+                <TableCell>{video.commentCount || '—'}</TableCell>
                 <TableCell>
-                  {formatDate(video.publishedAt)}
+                  {video.isAnalyzed ? (
+                    <div className="flex items-center gap-2">
+                      <Progress
+                        value={video.spamProbability}
+                        className="w-[100px]"
+                      />
+                      <span>{video.spamProbability.toFixed(1)}%</span>
+                    </div>
+                  ) : (
+                    '—'
+                  )}
                 </TableCell>
-                <TableCell>{video.commentCount}</TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-2">
-                    <Progress value={video.spamProbability} className="w-[100px]" />
-                    <span>{video.spamProbability.toFixed(1)}%</span>
+                  {video.isAnalyzing ? (
+                    <Badge variant="outline" className="bg-yellow-100">
+                      Analyzing...
+                    </Badge>
+                  ) : video.isAnalyzed ? (
+                    <Badge variant="outline" className="bg-green-100">
+                      Analyzed
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">Not Analyzed</Badge>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        onAnalyze(video.id).then((spamComments) => {
+                          if (spamComments.length > 0) {
+                            onCommentSelect(spamComments);
+                          }
+                        })
+                      }
+                      disabled={video.isAnalyzing}
+                    >
+                      {video.isAnalyzing
+                        ? 'Analyzing...'
+                        : video.isAnalyzed
+                          ? 'Re-analyze'
+                          : 'Analyze'}
+                    </Button>
+                    {video.isAnalyzed && video.spamComments.length > 0 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          onCommentSelect(video.spamComments || [])
+                        }
+                      >
+                        View Spam ({video.spamComments.length})
+                      </Button>
+                    )}
                   </div>
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onCommentSelect(video.spamComments || [])}
-                  >
-                    View Spam
-                  </Button>
                 </TableCell>
               </TableRow>
             ))
@@ -330,15 +546,16 @@ function CommentTable({
         <TableHeader>
           <TableRow>
             <TableHead>Author</TableHead>
-            <TableHead className="w-[50%]">Comment</TableHead>
+            <TableHead className="w-[45%]">Comment</TableHead>
             <TableHead>Date</TableHead>
+            <TableHead>Spam Score</TableHead>
             <TableHead>Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {comments.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center py-4">
+              <TableCell colSpan={5} className="text-center py-4">
                 No comments found
               </TableCell>
             </TableRow>
@@ -347,8 +564,19 @@ function CommentTable({
               <TableRow key={comment.id}>
                 <TableCell className="font-medium">{comment.author}</TableCell>
                 <TableCell>{comment.text}</TableCell>
+                <TableCell>{formatDate(comment.publishedAt)}</TableCell>
                 <TableCell>
-                  {formatDate(comment.publishedAt)}
+                  {comment.spamScore !== undefined ? (
+                    <div className="flex items-center gap-2">
+                      <Progress
+                        value={comment.spamScore * 100}
+                        className={`w-[60px] ${comment.spamScore > 0.7 ? 'bg-red-500' : 'bg-amber-500'}`}
+                      />
+                      <span>{(comment.spamScore * 100).toFixed(0)}%</span>
+                    </div>
+                  ) : (
+                    'Keyword match'
+                  )}
                 </TableCell>
                 <TableCell>
                   <Button
