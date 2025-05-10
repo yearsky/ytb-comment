@@ -32,6 +32,7 @@ interface Video {
 }
 
 export function YoutubeCommentManager() {
+  const [isMounted, setIsMounted] = useState(false);
   const [videoUrl, setVideoUrl] = useState('');
   const [channelId, setChannelId] = useState('');
   const [comments, setComments] = useState<Comment[]>([]);
@@ -40,12 +41,16 @@ export function YoutubeCommentManager() {
   const [keyword, setKeyword] = useState('judol');
   const [activeTab, setActiveTab] = useState('videos');
 
-  // Ambil Channel ID dan fetch video otomatis saat komponen dimuat
   useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isMounted) return;
+
     const fetchChannelIdAndVideos = async () => {
       setLoading(true);
       try {
-        // Ambil Channel ID
         const channelResponse = await fetch('/api/youtube/channel');
         if (!channelResponse.ok) {
           const errorData = await channelResponse.json();
@@ -61,7 +66,6 @@ export function YoutubeCommentManager() {
         const newChannelId = channelData.channelId;
         setChannelId(newChannelId);
 
-        // Fetch video otomatis setelah dapat channelId
         const videosResponse = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(newChannelId)}`);
         if (!videosResponse.ok) {
           const errorData = await videosResponse.json();
@@ -72,21 +76,18 @@ export function YoutubeCommentManager() {
 
         const videosData = await videosResponse.json();
 
-        // Calculate spam probability for each video
         const videosWithAnalytics = await Promise.all(videosData.videos.map(async (video: any) => {
           const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
           const commentsData = await commentsResponse.json();
-          
-          const spamComments = commentsData.comments.filter((comment: Comment) => 
+
+          const spamComments = commentsData.comments.filter((comment: Comment) =>
             comment.text.toLowerCase().includes(keyword.toLowerCase())
           );
-          
-          const spamProbability = commentsData.comments.length > 0 
-            ? (spamComments.length / commentsData.comments.length) * 100 
+
+          const spamProbability = commentsData.comments.length > 0
+            ? (spamComments.length / commentsData.comments.length) * 100
             : 0;
-          
-          console.log(`Video ${video.id}:`, { spamComments, commentCount: commentsData.comments.length });
-          
+
           return {
             ...video,
             commentCount: commentsData.comments.length,
@@ -103,18 +104,18 @@ export function YoutubeCommentManager() {
         setLoading(false);
       }
     };
-    
+
     fetchChannelIdAndVideos();
-  }, [keyword]); // Tambah keyword sebagai dependency untuk refresh saat keyword berubah
+  }, [isMounted, keyword]);
 
   const fetchChannelVideos = async () => {
     if (!channelId) {
       alert('No channel ID available');
       return;
     }
-    
+
     setLoading(true);
-    
+
     try {
       const response = await fetch(`/api/youtube/videos?channelId=${encodeURIComponent(channelId)}`);
       if (!response.ok) {
@@ -123,24 +124,21 @@ export function YoutubeCommentManager() {
         setLoading(false);
         return;
       }
-      
+
       const data = await response.json();
-      
-      // Calculate spam probability for each video
+
       const videosWithAnalytics = await Promise.all(data.videos.map(async (video: any) => {
         const commentsResponse = await fetch(`/api/youtube/comments?videoId=${video.id}`);
         const commentsData = await commentsResponse.json();
-        
-        const spamComments = commentsData.comments.filter((comment: Comment) => 
+
+        const spamComments = commentsData.comments.filter((comment: Comment) =>
           comment.text.toLowerCase().includes(keyword.toLowerCase())
         );
-        
-        const spamProbability = commentsData.comments.length > 0 
-          ? (spamComments.length / commentsData.comments.length) * 100 
+
+        const spamProbability = commentsData.comments.length > 0
+          ? (spamComments.length / commentsData.comments.length) * 100
           : 0;
-        
-        console.log(`Video ${video.id}:`, { spamComments, commentCount: commentsData.comments.length });
-        
+
         return {
           ...video,
           commentCount: commentsData.comments.length,
@@ -148,7 +146,7 @@ export function YoutubeCommentManager() {
           spamComments
         };
       }));
-      
+
       setVideos(videosWithAnalytics);
     } catch (error) {
       console.error('Error fetching videos:', error);
@@ -167,25 +165,25 @@ export function YoutubeCommentManager() {
         },
         body: JSON.stringify({ commentId }),
       });
-      
+
       if (!response.ok) {
         const errorData = await response.json();
         alert(`Error: ${errorData.error || 'Failed to delete comment'}`);
         return;
       }
-      
-      setComments(comments.filter(comment => comment.id !== commentId));
-      // Update video spam probability
-      setVideos(videos.map(video => ({
-        ...video,
-        spamComments: video.spamComments?.filter(comment => comment.id !== commentId) || [],
-        spamProbability: video.spamComments?.
 
-length > 0 
-          ? ((video.spamComments.length - 1) / video.commentCount) * 100 
-          : 0
-      })));
-      
+      setComments(comments.filter(comment => comment.id !== commentId));
+      setVideos(videos.map(video => {
+        const updatedSpamComments = video.spamComments?.filter(comment => comment.id !== commentId) || [];
+        return {
+          ...video,
+          spamComments: updatedSpamComments,
+          spamProbability: video.commentCount > 0
+            ? (updatedSpamComments.length / video.commentCount) * 100
+            : 0
+        };
+      }));
+
       alert(`Comment deleted successfully!`);
     } catch (error) {
       console.error('Error deleting comment:', error);
@@ -194,16 +192,20 @@ length > 0
   };
 
   const filterSpamComments = (comments: Comment[]) => {
-    return comments.filter(comment => 
+    return comments.filter(comment =>
       comment.text.toLowerCase().includes(keyword.toLowerCase())
     );
   };
 
   const handleCommentSelect = (newComments: Comment[]) => {
-    console.log('Updating comments:', newComments);
     setComments(newComments);
     setActiveTab('spam');
   };
+
+  // Don't render anything on the server-side
+  if (!isMounted) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
@@ -230,7 +232,6 @@ length > 0
         <TabsList>
           <TabsTrigger value="videos">Video Analytics</TabsTrigger>
           <TabsTrigger value="spam">Potential Spam</TabsTrigger>
-          {/* <TabsTrigger value="all">All Comments</TabsTrigger> */}
         </TabsList>
         <TabsContent value="videos">
           <VideoTable videos={videos} onCommentSelect={handleCommentSelect} />
@@ -241,24 +242,24 @@ length > 0
             onDelete={deleteComment}
           />
         </TabsContent>
-        {/* <TabsContent value="all">
-          <CommentTable
-            comments={comments}
-            onDelete={deleteComment}
-          />
-        </TabsContent> */}
       </Tabs>
     </div>
   );
 }
 
-function VideoTable({ 
+function VideoTable({
   videos,
   onCommentSelect
-}: { 
+}: {
   videos: Video[];
   onCommentSelect: (comments: Comment[]) => void;
 }) {
+  // Client-side date formatting function
+  const formatDate = (dateString: string) => {
+    if (typeof window === 'undefined') return ''; // Return empty string during SSR
+    return new Date(dateString).toLocaleDateString();
+  };
+
   return (
     <div className="border rounded-md">
       <Table>
@@ -283,7 +284,7 @@ function VideoTable({
               <TableRow key={video.id}>
                 <TableCell className="font-medium">{video.title}</TableCell>
                 <TableCell>
-                  {new Date(video.publishedAt).toLocaleDateString()}
+                  {formatDate(video.publishedAt)}
                 </TableCell>
                 <TableCell>{video.commentCount}</TableCell>
                 <TableCell>
@@ -296,10 +297,7 @@ function VideoTable({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      console.log('View Spam clicked, comments:', video.spamComments);
-                      onCommentSelect(video.spamComments || []);
-                    }}
+                    onClick={() => onCommentSelect(video.spamComments || [])}
                   >
                     View Spam
                   </Button>
@@ -313,13 +311,19 @@ function VideoTable({
   );
 }
 
-function CommentTable({ 
-  comments, 
-  onDelete 
-}: { 
+function CommentTable({
+  comments,
+  onDelete
+}: {
   comments: Comment[];
   onDelete: (id: string) => void;
 }) {
+  // Client-side date formatting function
+  const formatDate = (dateString: string) => {
+    if (typeof window === 'undefined') return ''; // Return empty string during SSR
+    return new Date(dateString).toLocaleDateString();
+  };
+
   return (
     <div className="border rounded-md">
       <Table>
@@ -344,7 +348,7 @@ function CommentTable({
                 <TableCell className="font-medium">{comment.author}</TableCell>
                 <TableCell>{comment.text}</TableCell>
                 <TableCell>
-                  {new Date(comment.publishedAt).toLocaleDateString()}
+                  {formatDate(comment.publishedAt)}
                 </TableCell>
                 <TableCell>
                   <Button
