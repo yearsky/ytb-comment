@@ -15,6 +15,13 @@ import {
 import { Progress } from '@/components/ui/progress';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
+import { formatDate } from '../../../utils/date';
+import {
+  fetchChannelVideos,
+  fetchComments,
+  analyzeSingleComment,
+  deleteYoutubeComment
+} from '../../../lib/youtube';
 
 // Import Gradio client properly
 // Make sure you've installed @gradio/client package: npm install @gradio/client
@@ -115,35 +122,22 @@ export function YoutubeCommentManager() {
     fetchChannelIdAndVideos();
   }, [isMounted]);
 
-  const fetchChannelVideos = async () => {
+  const handleFetchChannelVideos = async () => {
     if (!channelId) {
       alert('No channel ID available');
       return;
     }
-
     setLoading(true);
     setError(null);
-
     try {
-      const response = await fetch(
-        `/api/youtube/videos?channelId=${encodeURIComponent(channelId)}`
-      );
-      if (!response.ok) {
-        const errorData = await response.json();
-        alert(`Error: ${errorData.error || 'Failed to fetch videos'}`);
-        setLoading(false);
-        return;
-      }
-
-      const data = await response.json();
-      const initialVideos = data.videos.map((video: any) => ({
+      const videosData = await fetchChannelVideos(channelId);
+      const initialVideos = videosData.map((video: any) => ({
         ...video,
         commentCount: 0,
         spamProbability: 0,
         spamComments: [],
         isAnalyzed: false
       }));
-
       setVideos(initialVideos);
     } catch (error) {
       console.error('Error fetching videos:', error);
@@ -155,79 +149,31 @@ export function YoutubeCommentManager() {
   };
 
   const analyzeVideoComments = async (videoId: string) => {
-    // Mark this video as currently analyzing
     setVideos((prevVideos) =>
       prevVideos.map((v) =>
         v.id === videoId ? { ...v, isAnalyzing: true } : v
       )
     );
     setError(null);
-
     try {
-      // Fetch comments for this video
-      const commentsResponse = await fetch(
-        `/api/youtube/comments?videoId=${videoId}`
-      );
-      if (!commentsResponse.ok) {
-        throw new Error('Failed to fetch comments');
-      }
-
-      const commentsData = await commentsResponse.json();
-      const videoComments = commentsData.comments;
-
+      const videoComments = await fetchComments(videoId);
       let spamComments: Comment[] = [];
-
       if (useAI && videoComments.length > 0) {
         try {
-          console.log('Sending comments for AI processing...');
-
-          // Process comments one by one
           const predictions = await Promise.all(
             videoComments.map(async (comment: Comment) => {
-              const response = await fetch('/api/youtube/comments/analyze-single-comment', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ comment: comment.text })
-              });
-
-              if (!response.ok) {
-                throw new Error('Failed to process comment');
-              }
-
-              const data = await response.json();
-              const predictionText = data.prediction[0]; // Ambil string pertama dari array
-              
-              // Ekstrak informasi dari string respons
-              const probabilityMatch = predictionText.match(/Probability of being judol: ([\d.]+)/);
-              const processingTimeMatch = predictionText.match(/Processing time: ([\d.]+) seconds/);
-              const riskLevelMatch = predictionText.match(/Judol Risk Level: (HIGH|MEDIUM|LOW)/);
-
-              return {
-                probability: probabilityMatch ? parseFloat(probabilityMatch[1]) : 0,
-                riskLevel: riskLevelMatch ? riskLevelMatch[1] : 'LOW',
-                processingTime: processingTimeMatch ? parseFloat(processingTimeMatch[1]) : 0
-              };
+              return await analyzeSingleComment(comment.text);
             })
           );
-
-          console.log('Received AI predictions:', predictions);
-
-          // Map predictions to comments
           spamComments = videoComments.filter(
             (comment: Comment, index: number) => {
               const prediction = predictions[index];
               if (!prediction) return false;
-
               comment.spamScore = prediction.probability;
               comment.riskLevel = prediction.riskLevel;
               comment.processingTime = prediction.processingTime;
-              
-              // Komentar dianggap spam jika probabilitas > 0.5 dan risk level HIGH atau MEDIUM
               comment.isSpam = prediction.probability > 0.5 && 
-                             (prediction.riskLevel === 'HIGH' || prediction.riskLevel === 'MEDIUM');
-              
+                (prediction.riskLevel === 'HIGH' || prediction.riskLevel === 'MEDIUM');
               return comment.isSpam || comment.text.toLowerCase().includes(keyword.toLowerCase());
             }
           );
@@ -236,26 +182,19 @@ export function YoutubeCommentManager() {
           setError(
             `AI processing error: ${aiError instanceof Error ? aiError.message : 'Unknown error'}`
           );
-          // Fallback to keyword filtering if AI fails
-          console.log('Falling back to keyword filtering');
           spamComments = videoComments.filter((comment: Comment) =>
             comment.text.toLowerCase().includes(keyword.toLowerCase())
           );
         }
       } else {
-        // Use only keyword filtering
         spamComments = videoComments.filter((comment: Comment) =>
           comment.text.toLowerCase().includes(keyword.toLowerCase())
         );
       }
-
-      // Calculate spam probability
       const spamProbability =
         videoComments.length > 0
           ? (spamComments.length / videoComments.length) * 100
           : 0;
-
-      // Update video with analysis results
       setVideos((prevVideos) =>
         prevVideos.map((v) =>
           v.id === videoId
@@ -270,21 +209,17 @@ export function YoutubeCommentManager() {
             : v
         )
       );
-
       return spamComments;
     } catch (error) {
       console.error(`Error analyzing video ${videoId}:`, error);
       const errorMessage =
         error instanceof Error ? error.message : 'Unknown error';
       setError(`Error analyzing video: ${errorMessage}`);
-
-      // Update video to show analysis failed
       setVideos((prevVideos) =>
         prevVideos.map((v) =>
           v.id === videoId ? { ...v, isAnalyzing: false } : v
         )
       );
-
       return [];
     }
   };
@@ -292,7 +227,6 @@ export function YoutubeCommentManager() {
   const analyzeAllVideos = async () => {
     setAnalyzing(true);
     setError(null);
-
     try {
       for (const video of videos) {
         if (!video.isAnalyzed) {
@@ -312,20 +246,7 @@ export function YoutubeCommentManager() {
 
   const deleteComment = async (commentId: string) => {
     try {
-      const response = await fetch('/api/youtube/comments', {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ commentId })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        alert(`Error: ${errorData.error || 'Failed to delete comment'}`);
-        return;
-      }
-
+      await deleteYoutubeComment(commentId);
       setComments(comments.filter((comment) => comment.id !== commentId));
       setVideos(
         videos.map((video) => {
@@ -342,7 +263,6 @@ export function YoutubeCommentManager() {
           };
         })
       );
-
       alert(`Comment deleted successfully!`);
     } catch (error) {
       console.error('Error deleting comment:', error);
@@ -371,7 +291,7 @@ export function YoutubeCommentManager() {
           {channelId ? `Channel ID: ${channelId}` : 'Fetching channel ID...'}
         </p>
         <div className="flex items-center gap-4">
-          <Button onClick={fetchChannelVideos} disabled={loading || !channelId}>
+          <Button onClick={handleFetchChannelVideos} disabled={loading || !channelId}>
             {loading ? 'Loading...' : 'Refresh Videos'}
           </Button>
 
@@ -445,22 +365,16 @@ function VideoTable({
   onCommentSelect: (comments: Comment[]) => void;
   onAnalyze: (videoId: string) => Promise<Comment[]>;
 }) {
-  // Client-side date formatting function
-  const formatDate = (dateString: string) => {
-    if (typeof window === 'undefined') return ''; // Return empty string during SSR
-    return new Date(dateString).toLocaleDateString();
-  };
-
   return (
     <div className="border rounded-md">
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Title</TableHead>
-            <TableHead>Published</TableHead>
-            <TableHead>Comments</TableHead>
+            <TableHead className="">Published</TableHead>
+            <TableHead className="">Comments</TableHead>
             <TableHead>Spam Probability</TableHead>
-            <TableHead>Status</TableHead>
+            <TableHead className="">Status</TableHead>
             <TableHead>Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -475,8 +389,8 @@ function VideoTable({
             videos.map((video) => (
               <TableRow key={video.id}>
                 <TableCell className="font-medium">{video.title}</TableCell>
-                <TableCell>{formatDate(video.publishedAt)}</TableCell>
-                <TableCell>{video.commentCount || '—'}</TableCell>
+                <TableCell className="">{formatDate(video.publishedAt)}</TableCell>
+                <TableCell className="">{video.commentCount || '—'}</TableCell>
                 <TableCell>
                   {video.isAnalyzed ? (
                     <div className="flex items-center gap-2">
@@ -490,7 +404,7 @@ function VideoTable({
                     '—'
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell className="">
                   {video.isAnalyzing ? (
                     <Badge variant="outline" className="bg-yellow-100">
                       Analyzing...
@@ -552,12 +466,6 @@ function CommentTable({
   comments: Comment[];
   onDelete: (id: string) => void;
 }) {
-  // Client-side date formatting function
-  const formatDate = (dateString: string) => {
-    if (typeof window === 'undefined') return ''; // Return empty string during SSR
-    return new Date(dateString).toLocaleDateString();
-  };
-
   return (
     <div className="border rounded-md">
       <Table>
@@ -565,7 +473,7 @@ function CommentTable({
           <TableRow>
             <TableHead>Author</TableHead>
             <TableHead className="w-[45%]">Comment</TableHead>
-            <TableHead>Date</TableHead>
+            <TableHead className="hidden md:table-cell">Date</TableHead>
             <TableHead>Risk Level</TableHead>
             <TableHead>Spam Score</TableHead>
             <TableHead>Actions</TableHead>
@@ -583,7 +491,7 @@ function CommentTable({
               <TableRow key={comment.id}>
                 <TableCell className="font-medium">{comment.author}</TableCell>
                 <TableCell>{comment.text}</TableCell>
-                <TableCell>{formatDate(comment.publishedAt)}</TableCell>
+                <TableCell className="hidden md:table-cell">{formatDate(comment.publishedAt)}</TableCell>
                 <TableCell>
                   {comment.riskLevel ? (
                     <Badge 

@@ -19,7 +19,7 @@ export default async function YoutubePage() {
   }
   
   return (
-    <Card>
+    <Card className='overflow-x-auto'>
       <CardHeader>
         <CardTitle>YouTube Comments Manager</CardTitle>
         <CardDescription>Manage and delete unwanted comments from your YouTube videos.</CardDescription>
