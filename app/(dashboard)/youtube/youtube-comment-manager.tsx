@@ -28,6 +28,8 @@ interface Comment {
   publishedAt: string;
   isSpam?: boolean;
   spamScore?: number;
+  riskLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
+  processingTime?: number;
 }
 
 interface Video {
@@ -195,7 +197,18 @@ export function YoutubeCommentManager() {
               }
 
               const data = await response.json();
-              return data.prediction;
+              const predictionText = data.prediction[0]; // Ambil string pertama dari array
+              
+              // Ekstrak informasi dari string respons
+              const probabilityMatch = predictionText.match(/Probability of being judol: ([\d.]+)/);
+              const processingTimeMatch = predictionText.match(/Processing time: ([\d.]+) seconds/);
+              const riskLevelMatch = predictionText.match(/Judol Risk Level: (HIGH|MEDIUM|LOW)/);
+
+              return {
+                probability: probabilityMatch ? parseFloat(probabilityMatch[1]) : 0,
+                riskLevel: riskLevelMatch ? riskLevelMatch[1] : 'LOW',
+                processingTime: processingTimeMatch ? parseFloat(processingTimeMatch[1]) : 0
+              };
             })
           );
 
@@ -204,13 +217,18 @@ export function YoutubeCommentManager() {
           // Map predictions to comments
           spamComments = videoComments.filter(
             (comment: Comment, index: number) => {
-              const score = predictions[index] || 0;
-              comment.spamScore = score;
-              comment.isSpam = score > 0.7; // Threshold for spam detection
-              return (
-                comment.isSpam ||
-                comment.text.toLowerCase().includes(keyword.toLowerCase())
-              );
+              const prediction = predictions[index];
+              if (!prediction) return false;
+
+              comment.spamScore = prediction.probability;
+              comment.riskLevel = prediction.riskLevel;
+              comment.processingTime = prediction.processingTime;
+              
+              // Komentar dianggap spam jika probabilitas > 0.5 dan risk level HIGH atau MEDIUM
+              comment.isSpam = prediction.probability > 0.5 && 
+                             (prediction.riskLevel === 'HIGH' || prediction.riskLevel === 'MEDIUM');
+              
+              return comment.isSpam || comment.text.toLowerCase().includes(keyword.toLowerCase());
             }
           );
         } catch (aiError) {
@@ -548,6 +566,7 @@ function CommentTable({
             <TableHead>Author</TableHead>
             <TableHead className="w-[45%]">Comment</TableHead>
             <TableHead>Date</TableHead>
+            <TableHead>Risk Level</TableHead>
             <TableHead>Spam Score</TableHead>
             <TableHead>Actions</TableHead>
           </TableRow>
@@ -555,7 +574,7 @@ function CommentTable({
         <TableBody>
           {comments.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center py-4">
+              <TableCell colSpan={6} className="text-center py-4">
                 No comments found
               </TableCell>
             </TableRow>
@@ -566,11 +585,35 @@ function CommentTable({
                 <TableCell>{comment.text}</TableCell>
                 <TableCell>{formatDate(comment.publishedAt)}</TableCell>
                 <TableCell>
+                  {comment.riskLevel ? (
+                    <Badge 
+                      variant="outline" 
+                      className={`${
+                        comment.riskLevel === 'HIGH' 
+                          ? 'bg-red-100 text-red-700' 
+                          : comment.riskLevel === 'MEDIUM'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-green-100 text-green-700'
+                      }`}
+                    >
+                      {comment.riskLevel}
+                    </Badge>
+                  ) : (
+                    'Keyword match'
+                  )}
+                </TableCell>
+                <TableCell>
                   {comment.spamScore !== undefined ? (
                     <div className="flex items-center gap-2">
                       <Progress
                         value={comment.spamScore * 100}
-                        className={`w-[60px] ${comment.spamScore > 0.7 ? 'bg-red-500' : 'bg-amber-500'}`}
+                        className={`w-[60px] ${
+                          comment.spamScore > 0.7 
+                            ? 'bg-red-500' 
+                            : comment.spamScore > 0.4 
+                            ? 'bg-yellow-500'
+                            : 'bg-green-500'
+                        }`}
                       />
                       <span>{(comment.spamScore * 100).toFixed(0)}%</span>
                     </div>

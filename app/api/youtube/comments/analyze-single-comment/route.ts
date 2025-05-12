@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       )
     ]) as { data: number };
 
-    console.log('Received prediction response');
+    console.log('Received prediction response',result.data);
     return NextResponse.json({ prediction: result.data });
   } catch (gradioError) {
     console.error('Gradio processing error:', gradioError);
